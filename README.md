@@ -107,6 +107,26 @@ var builder = DistributedApplication.CreateBuilder(args);
 var serviceBus = builder.AddServiceBusEmulator("servicebus");
 ```
 
+Need the HTTPS admin endpoint (for the Node.js/Python/Java admin SDKs)? Chain `WithAdminTls()`. It
+enables the endpoint and serves it with the **ASP.NET Core HTTPS development certificate** — the same
+cert Aspire uses for its own HTTPS endpoints — so there is nothing extra to generate:
+
+```csharp
+var serviceBus = builder.AddServiceBusEmulator("servicebus")
+    .WithAdminTls();                       // HTTPS admin on port 5301, using the dev cert
+```
+
+`WithAdminTls` exports the dev cert (`dotnet dev-certs https`), registers an `https` endpoint, and
+passes the cert to the emulator. Options:
+
+- `WithAdminTls(port: 443)` — bind a different port (the Java admin SDK only reaches the endpoint on 443).
+- `WithAdminTls(certPath: "cert.pfx", certPassword: "…")` — serve your own certificate instead of the dev cert.
+
+The dev cert's SAN is `localhost`, so connect as `localhost`. .NET needs nothing further (it uses the
+plaintext admin port). Node.js/Python/Java clients still trust the emitted CA once — see the
+[HTTPS admin endpoint](#https-admin-endpoint-nodejs-java-python) section. If the export fails, run
+`dotnet dev-certs https --trust` to create the dev cert.
+
 ## When to Use (and When Not To)
 
 **Good fit:**
@@ -237,6 +257,9 @@ Point your admin client at `https://localhost:5301`, trust the CA, and create en
 can also **bring your own certificate** (`--AdminTlsCertPath`, `--AdminTlsKeyPath`,
 `--AdminTlsCertPassword`, or `--AdminTlsCertBase64`). Leave `--AdminTlsEnabled` unset (the default)
 to keep TLS off entirely.
+
+Using **Aspire**? Call `.WithAdminTls()` on the emulator resource to enable this endpoint and serve
+it with the ASP.NET Core dev cert automatically — see [Aspire integration](#aspire-integration).
 
 Per-language trust setup lives in its own guide — [Node.js](certs/nodejs.md),
 [Python](certs/python.md), [Java](certs/java.md) (note: the Java SDK admin client only works on port
