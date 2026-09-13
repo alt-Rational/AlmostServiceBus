@@ -42,6 +42,9 @@ jobs:
           - name: Unit
             slug: unit
             project: tests/AlmostServiceBus.Tests
+          - name: Aspire
+            slug: aspire
+            project: tests/AlmostServiceBus.Aspire.Tests
           - name: SDK Integration
             slug: sdkintegration
             project: tests/AlmostServiceBus.SdkIntegration.Tests
