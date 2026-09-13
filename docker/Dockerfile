@@ -9,4 +9,5 @@ VOLUME /certs
 
 COPY . ./
 
-ENTRYPOINT ["dotnet", "AlmostServiceBus.Host.dll", "--Port", "5672", "--DashboardPort", "15672", "--AdminTlsPort", "5301", "--AdminTlsCertDir", "/certs"]
+# The HTTPS admin endpoint (5301) is opt-in: start with -e AdminTlsEnabled=true to enable it.
+ENTRYPOINT ["dotnet", "AlmostServiceBus.Host.dll", "--Port", "5672", "--DashboardPort", "15672", "--AdminTlsCertDir", "/certs"]

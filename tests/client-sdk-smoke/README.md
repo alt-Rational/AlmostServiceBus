@@ -62,7 +62,7 @@ overrides the admin API base URL (default `http://localhost:5300`).
 Start the emulator with the HTTPS admin endpoint enabled and a cert directory:
 
 ```bash
-dotnet run --project src/AlmostServiceBus.Host -- --AdminTlsPort 5301 --AdminTlsCertDir /tmp/asb-certs
+dotnet run --project src/AlmostServiceBus.Host -- --AdminTlsEnabled true --AdminTlsPort 5301 --AdminTlsCertDir /tmp/asb-certs
 ```
 
 The emulator writes a CA (`emulator-ca.crt`) into that directory on first run. Each client trusts

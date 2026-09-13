@@ -127,7 +127,7 @@ jobs:
       - name: Start emulator (AMQP 5672, admin HTTP 5300, admin HTTPS 5301)
         run: |
           dotnet run --project src/AlmostServiceBus.Host --no-build \
-            -- --DashboardPort 0 --AdminTlsPort 5301 --AdminTlsCertDir "$RUNNER_TEMP/asb-certs" \
+            -- --DashboardPort 0 --AdminTlsEnabled true --AdminTlsPort 5301 --AdminTlsCertDir "$RUNNER_TEMP/asb-certs" \
             > emulator.log 2>&1 &
           echo "EMULATOR_PID=$!" >> "$GITHUB_ENV"
           echo "ASB_CERT_DIR=$RUNNER_TEMP/asb-certs" >> "$GITHUB_ENV"
