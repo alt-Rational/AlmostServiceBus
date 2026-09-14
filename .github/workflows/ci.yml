@@ -127,26 +127,24 @@ jobs:
       - name: Build emulator host
         run: dotnet build src/AlmostServiceBus.Host
 
-      # The Java SDK admin client strips the port and always dials HTTPS on 443, so the Java job
-      # binds the TLS admin endpoint on the privileged port 443 (granting the dotnet host
-      # CAP_NET_BIND_SERVICE). Node/Python keep it on 5301 (their admin clients honour the port).
-      - name: Start emulator (AMQP 5672, admin HTTP 5300, admin HTTPS ${{ matrix.sdk == 'java' && '443' || '5301' }})
+      # The Java SDK admin client strips the port and always dials HTTPS on 443. Binding 443
+      # directly needs privileges the emulator process lacks (setcap can't help: `dotnet run`
+      # binds from the unprivileged apphost, not the muxer). So the emulator always listens on
+      # 5301 and the Java job adds a loopback NAT redirect 443→5301 — transparent at the TCP
+      # layer, so TLS still sees `localhost` (a cert SAN). Node/Python target 5301 directly.
+      - name: Start emulator (AMQP 5672, admin HTTP 5300, admin HTTPS 5301)
         run: |
-          if [ "${{ matrix.sdk }}" = "java" ]; then
-            ADMIN_TLS_PORT=443
-            sudo setcap 'cap_net_bind_service=+ep' "$(readlink -f "$(command -v dotnet)")"
-          else
-            ADMIN_TLS_PORT=5301
-          fi
-          echo "ASB_ADMIN_TLS_PORT=$ADMIN_TLS_PORT" >> "$GITHUB_ENV"
           dotnet run --project src/AlmostServiceBus.Host --no-build \
-            -- --DashboardPort 0 --AdminTlsEnabled true --AdminTlsPort "$ADMIN_TLS_PORT" --AdminTlsCertDir "$RUNNER_TEMP/asb-certs" \
+            -- --DashboardPort 0 --AdminTlsEnabled true --AdminTlsPort 5301 --AdminTlsCertDir "$RUNNER_TEMP/asb-certs" \
             > emulator.log 2>&1 &
           echo "EMULATOR_PID=$!" >> "$GITHUB_ENV"
           echo "ASB_CERT_DIR=$RUNNER_TEMP/asb-certs" >> "$GITHUB_ENV"
+          if [ "${{ matrix.sdk }}" = "java" ]; then
+            sudo iptables -t nat -A OUTPUT -o lo -p tcp --dport 443 -j REDIRECT --to-ports 5301
+          fi
           for i in $(seq 1 30); do
             nc -z localhost 5672 2>/dev/null && nc -z localhost 5300 2>/dev/null \
-              && nc -z localhost "$ADMIN_TLS_PORT" 2>/dev/null \
+              && nc -z localhost 5301 2>/dev/null \
               && echo "Emulator ready" && break
             sleep 1
           done
