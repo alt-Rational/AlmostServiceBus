@@ -130,7 +130,7 @@ public final class AdminSmoke {
             "subscription lockDuration round-trips (" + gotSub.getLockDuration() + ")");
 
         step("create SQL rule");
-        check(RULE.equals(admin.createRule(TOPIC, SUBSCRIPTION, RULE,
+        check(RULE.equals(admin.createRule(TOPIC, RULE, SUBSCRIPTION,
             new CreateRuleOptions(new SqlRuleFilter("priority = 'high'"))).getName()),
             "rule created (" + RULE + ")");
 
