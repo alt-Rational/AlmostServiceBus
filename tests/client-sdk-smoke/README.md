@@ -21,10 +21,11 @@ Each script drives the same scenario and stops at the first failed check:
 
 Each language also has an **admin test** (`admin.py` / `admin.mjs` / `AdminSmoke`) that exercises
 the management interface end-to-end — queue / topic / subscription / rule create, get, list,
-update and delete, plus a data-plane send/receive on an admin-created entity. Node and Python use
-the SDK's `ServiceBusAdministrationClient` against the HTTPS admin endpoint (`5301`); Java drives
-the same Atom REST API over HTTPS directly (its SDK admin client can't reach the port — see
-below). See [../../certs/README.md](../../certs/README.md) for per-language CA trust setup.
+update and delete, plus a data-plane send/receive on an admin-created entity. All three use the
+SDK's `ServiceBusAdministrationClient`. Node and Python target the HTTPS admin endpoint (`5301`);
+Java's SDK strips the port and always dials 443, so its test targets the endpoint bound on port
+443 with a portless connection string (see below). See
+[../../certs/README.md](../../certs/README.md) for per-language CA trust setup.
 
 ## Running locally
 
@@ -62,6 +63,7 @@ overrides the admin API base URL (default `http://localhost:5300`).
 Start the emulator with the HTTPS admin endpoint enabled and a cert directory:
 
 ```bash
+# Node/Python use port 5301; Java requires the endpoint on the privileged port 443 (see below).
 dotnet run --project src/AlmostServiceBus.Host -- --AdminTlsEnabled true --AdminTlsPort 5301 --AdminTlsCertDir /tmp/asb-certs
 ```
 
@@ -77,16 +79,19 @@ REQUESTS_CA_BUNDLE=/tmp/asb-certs/emulator-ca.crt python admin.py
 cd tests/client-sdk-smoke/node
 NODE_EXTRA_CA_CERTS=/tmp/asb-certs/emulator-ca.crt node admin.mjs
 
-# Java — trust the CA via a PKCS12 truststore, run the AdminSmoke main
+# Java — its SDK admin client dials 443, so bind the endpoint there (privileged) and use a
+# portless connection string. Trust the CA via a PKCS12 truststore, then run the AdminSmoke main.
+#   dotnet run --project src/AlmostServiceBus.Host -- --AdminTlsEnabled true --AdminTlsPort 443 --AdminTlsCertDir /tmp/asb-certs
 cd tests/client-sdk-smoke/java
 keytool -importcert -noprompt -alias asb-ca -file /tmp/asb-certs/emulator-ca.crt \
   -keystore /tmp/asb-certs/emulator-truststore.p12 -storetype PKCS12 -storepass changeit
 MAVEN_OPTS="-Djavax.net.ssl.trustStore=/tmp/asb-certs/emulator-truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=changeit" \
+  ASB_ADMIN_CONNECTION_STRING="Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=emulator;UseDevelopmentEmulator=true" \
   mvn -q -o exec:java -Dexec.mainClass=io.almostservicebus.smoke.AdminSmoke
 ```
 
-`ASB_ADMIN_CONNECTION_STRING` (Node/Python, default `Endpoint=sb://localhost:5301;…`) and
-`ASB_ADMIN_TLS_ENDPOINT` (Java, default `https://localhost:5301`) override the admin target.
+`ASB_ADMIN_CONNECTION_STRING` overrides the admin target for all three (Node/Python default
+`Endpoint=sb://localhost:5301;…`; Java default is the portless `Endpoint=sb://localhost;…`).
 
 ## Node.js concurrent-connection regression test
 
@@ -121,14 +126,14 @@ which the **admin** tests use to drive the SDK admin clients themselves:
   port, so — pointed at `Endpoint=sb://localhost:5301;…` and told to trust the emulator CA — they
   work end-to-end. `admin.mjs` / `admin.py` cover queue/topic/subscription/rule CRUD plus usage.
 - **Java** `ServiceBusAdministrationClientBuilder` strips the port and always dials the namespace
-  host on 443, ignoring both the connection-string port and an explicit `.endpoint()` override, so
-  it *cannot* reach the emulator. `AdminSmoke` therefore drives the same Atom REST API the admin
-  client would, over HTTPS on 5301, with `java.net.http`.
+  host on 443, ignoring both the connection-string port and an explicit `.endpoint()` override. So
+  `AdminSmoke` runs the SDK admin client against the TLS endpoint bound on **port 443** (privileged)
+  with a **portless** connection string — see [../../certs/java.md](../../certs/java.md).
 
-This partially supersedes an earlier note (and CLAUDE.md decision #10) that no non-.NET admin
-client could reach the emulator: Node and Python now can, over the TLS endpoint; only Java still
-cannot. If you need management from Java against the emulator, call the REST API directly (over
-HTTP on 5300 or HTTPS on 5301) as `AdminSmoke` does.
+This supersedes an earlier note (and CLAUDE.md decision #10) that no non-.NET admin client could
+reach the emulator: all three SDK admin clients now can over the TLS endpoint — Node and Python on
+5301, Java on 443. If you cannot bind 443, call the REST API directly (over HTTP on 5300 or HTTPS
+on 5301) from Java instead.
 
 ## Things these tests taught us about the emulator
 

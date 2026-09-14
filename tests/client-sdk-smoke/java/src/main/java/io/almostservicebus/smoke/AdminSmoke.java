@@ -1,32 +1,44 @@
 package io.almostservicebus.smoke;
 
+import com.azure.core.exception.ResourceNotFoundException;
 import com.azure.messaging.servicebus.ServiceBusClientBuilder;
 import com.azure.messaging.servicebus.ServiceBusMessage;
 import com.azure.messaging.servicebus.ServiceBusReceivedMessage;
 import com.azure.messaging.servicebus.ServiceBusReceiverClient;
 import com.azure.messaging.servicebus.ServiceBusSenderClient;
+import com.azure.messaging.servicebus.administration.ServiceBusAdministrationClient;
+import com.azure.messaging.servicebus.administration.ServiceBusAdministrationClientBuilder;
+import com.azure.messaging.servicebus.administration.models.CreateQueueOptions;
+import com.azure.messaging.servicebus.administration.models.CreateRuleOptions;
+import com.azure.messaging.servicebus.administration.models.CreateSubscriptionOptions;
+import com.azure.messaging.servicebus.administration.models.QueueProperties;
+import com.azure.messaging.servicebus.administration.models.SqlRuleFilter;
+import com.azure.messaging.servicebus.administration.models.SubscriptionProperties;
 import com.azure.messaging.servicebus.models.ServiceBusReceiveMode;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
 /**
- * Admin-interface test: exercises the AlmostServiceBus emulator's management (admin) interface
- * over its HTTPS admin endpoint (default port 5301) from Java, covering queue / topic /
- * subscription / rule create, get, list and delete, plus a data-plane round-trip on an
- * admin-created queue to prove the entity is usable.
+ * Admin-interface test: exercises the official Java Azure Service Bus SDK's
+ * {@code ServiceBusAdministrationClient} against a running AlmostServiceBus emulator, covering
+ * queue / topic / subscription / rule create, get, list, update and delete, plus a data-plane
+ * round-trip on an admin-created queue to prove the entity is usable.
  *
- * <p>Unlike Node and Python, the Java {@code ServiceBusAdministrationClient} cannot be pointed at
- * the emulator's admin endpoint: it strips the port and always speaks HTTPS to the namespace host
- * on 443, ignoring both the connection-string port and an explicit {@code .endpoint(...)} override.
- * So this test drives the same Atom REST API the SDK admin client uses, over HTTPS on 5301, with
- * {@code java.net.http}. Java trusts the emulator CA through a PKCS12 truststore passed as system
- * properties (see ../../../certs/README.md):
+ * <p>The Java {@code ServiceBusAdministrationClientBuilder} strips the port from the endpoint and
+ * always speaks HTTPS to the namespace host on <strong>port 443</strong> (both
+ * {@code connectionString(...)} and {@code endpoint(...)} reduce to {@code URI.getHost()}). So run
+ * the emulator's HTTPS admin endpoint on 443 and point this test at a <em>portless</em> connection
+ * string:
+ *
+ * <pre>
+ * almost-servicebus --AdminTlsEnabled true --AdminTlsPort 443   # 443 is privileged
+ * ASB_ADMIN_CONNECTION_STRING=Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=emulator;UseDevelopmentEmulator=true
+ * </pre>
+ *
+ * <p>Java trusts the emulator CA through a PKCS12 truststore passed as system properties (see
+ * ../../../certs/README.md):
  *
  * <pre>
  * java -Djavax.net.ssl.trustStore=&lt;certdir&gt;/emulator-truststore.p12 \
@@ -34,22 +46,20 @@ import java.util.UUID;
  *      -Djavax.net.ssl.trustStorePassword=changeit ...
  * </pre>
  *
- * <p>The data-plane round-trip uses the SDK against the plain-AMQP endpoint on 5672, which does
- * honour {@code UseDevelopmentEmulator=true}. Exits non-zero on the first failed check.
+ * <p>The data-plane round-trip uses the SDK against the plain-AMQP endpoint on 5672. Exits
+ * non-zero on the first failed check.
  */
 public final class AdminSmoke {
 
-    private static final String CONNECTION_STRING = System.getenv().getOrDefault(
+    private static final String ADMIN_CONNECTION_STRING = System.getenv().getOrDefault(
+        "ASB_ADMIN_CONNECTION_STRING",
+        "Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;"
+            + "SharedAccessKey=emulator;UseDevelopmentEmulator=true");
+
+    private static final String DATA_CONNECTION_STRING = System.getenv().getOrDefault(
         "ASB_CONNECTION_STRING",
         "Endpoint=sb://localhost:5672;SharedAccessKeyName=RootManageSharedAccessKey;"
             + "SharedAccessKey=emulator;UseDevelopmentEmulator=true");
-
-    // HTTPS admin endpoint (the TLS-terminating Kestrel listener, default port 5301).
-    private static final String ADMIN_ENDPOINT = System.getenv()
-        .getOrDefault("ASB_ADMIN_TLS_ENDPOINT", "https://localhost:5301").replaceAll("/+$", "");
-
-    private static final String SB_NS = "http://schemas.microsoft.com/netservices/2010/10/servicebus/connect";
-    private static final HttpClient HTTP = HttpClient.newHttpClient();
 
     private static final String RUN = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
     private static final String QUEUE = "admin-java-" + RUN;
@@ -71,87 +81,73 @@ public final class AdminSmoke {
         System.out.println("    ok   " + what);
     }
 
-    private static String keyName() {
-        for (String part : CONNECTION_STRING.split(";")) {
-            if (part.startsWith("SharedAccessKeyName=")) return part.substring("SharedAccessKeyName=".length());
-        }
-        return "RootManageSharedAccessKey";
-    }
+    public static void main(String[] args) {
+        ServiceBusAdministrationClient admin = new ServiceBusAdministrationClientBuilder()
+            .connectionString(ADMIN_CONNECTION_STRING)
+            .buildClient();
 
-    private static HttpResponse<String> mgmt(String method, String path, String body) throws Exception {
-        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(ADMIN_ENDPOINT + "/" + path + "?api-version=2021-05"))
-            // The emulator maps SharedAccessKeyName to a namespace; the signature is not checked.
-            .header("Authorization", "SharedAccessSignature sr=localhost&sig=x&se=1&skn=" + keyName())
-            .header("Content-Type", "application/atom+xml;type=entry;charset=utf-8")
-            .timeout(Duration.ofSeconds(10));
-        b = body == null ? b.method(method, HttpRequest.BodyPublishers.noBody())
-                         : b.method(method, HttpRequest.BodyPublishers.ofString(body));
-        return HTTP.send(b.build(), HttpResponse.BodyHandlers.ofString());
-    }
-
-    private static String entry(String descriptionTag, String inner) {
-        return "<entry xmlns=\"http://www.w3.org/2005/Atom\"><content type=\"application/xml\">"
-            + "<" + descriptionTag + " xmlns=\"" + SB_NS + "\" xmlns:i=\"http://www.w3.org/2001/XMLSchema-instance\">"
-            + inner + "</" + descriptionTag + "></content></entry>";
-    }
-
-    private static boolean created(HttpResponse<?> r) {
-        return r.statusCode() == 200 || r.statusCode() == 201;
-    }
-
-    public static void main(String[] args) throws Exception {
-        step("create queue with options (HTTPS admin API on " + ADMIN_ENDPOINT + ")");
-        HttpResponse<String> r = mgmt("PUT", QUEUE, entry("QueueDescription",
-            "<LockDuration>PT1M</LockDuration><MaxDeliveryCount>5</MaxDeliveryCount>"
-                + "<MaxSizeInMegabytes>2048</MaxSizeInMegabytes>"
-                + "<DeadLetteringOnMessageExpiration>true</DeadLetteringOnMessageExpiration>"));
-        check(created(r), "create queue -> " + r.statusCode());
+        step("create queue with options (SDK admin client over HTTPS)");
+        QueueProperties queue = admin.createQueue(QUEUE, new CreateQueueOptions()
+            .setLockDuration(Duration.parse("PT1M"))
+            .setMaxDeliveryCount(5)
+            .setMaxSizeInMegabytes(2048)
+            .setDeadLetteringOnMessageExpiration(true));
+        check(QUEUE.equals(queue.getName()), "queue created (" + queue.getName() + ")");
+        check(queue.getMaxDeliveryCount() == 5, "maxDeliveryCount set (" + queue.getMaxDeliveryCount() + ")");
 
         step("get queue and confirm options round-trip");
-        r = mgmt("GET", QUEUE, null);
-        check(r.statusCode() == 200, "get queue -> " + r.statusCode());
-        check(r.body().contains("<LockDuration>PT1M</LockDuration>"), "get queue echoes LockDuration");
-        check(r.body().contains("<MaxDeliveryCount>5</MaxDeliveryCount>"), "get queue echoes MaxDeliveryCount");
-        check(r.body().contains("<MaxSizeInMegabytes>2048</MaxSizeInMegabytes>"), "get queue echoes MaxSizeInMegabytes");
+        QueueProperties gotQueue = admin.getQueue(QUEUE);
+        check(gotQueue.getMaxDeliveryCount() == 5,
+            "maxDeliveryCount round-trips (" + gotQueue.getMaxDeliveryCount() + ")");
+        check(gotQueue.getMaxSizeInMegabytes() == 2048,
+            "maxSizeInMegabytes round-trips (" + gotQueue.getMaxSizeInMegabytes() + ")");
+        check(gotQueue.isDeadLetteringOnMessageExpiration(), "deadLetteringOnMessageExpiration round-trips");
+        check(Duration.parse("PT1M").equals(gotQueue.getLockDuration()),
+            "lockDuration round-trips (" + gotQueue.getLockDuration() + ")");
 
-        step("create topic");
-        r = mgmt("PUT", TOPIC, entry("TopicDescription", ""));
-        check(created(r), "create topic -> " + r.statusCode());
+        step("update queue");
+        gotQueue.setMaxDeliveryCount(8);
+        admin.updateQueue(gotQueue);
+        check(admin.getQueue(QUEUE).getMaxDeliveryCount() == 8, "updated maxDeliveryCount persisted");
+
+        step("create topic and confirm");
+        check(TOPIC.equals(admin.createTopic(TOPIC).getName()), "topic created (" + TOPIC + ")");
 
         step("create subscription with options");
-        r = mgmt("PUT", TOPIC + "/Subscriptions/" + SUBSCRIPTION, entry("SubscriptionDescription",
-            "<LockDuration>PT45S</LockDuration><MaxDeliveryCount>4</MaxDeliveryCount>"));
-        check(created(r), "create subscription -> " + r.statusCode());
+        SubscriptionProperties subscription = admin.createSubscription(TOPIC, SUBSCRIPTION,
+            new CreateSubscriptionOptions()
+                .setLockDuration(Duration.parse("PT45S"))
+                .setMaxDeliveryCount(4)
+                .setDeadLetteringOnMessageExpiration(true));
+        check(SUBSCRIPTION.equals(subscription.getSubscriptionName()),
+            "subscription created (" + subscription.getSubscriptionName() + ")");
+        check(subscription.getMaxDeliveryCount() == 4,
+            "subscription maxDeliveryCount (" + subscription.getMaxDeliveryCount() + ")");
 
         step("get subscription and confirm round-trip");
-        r = mgmt("GET", TOPIC + "/Subscriptions/" + SUBSCRIPTION, null);
-        check(r.statusCode() == 200, "get subscription -> " + r.statusCode());
-        check(r.body().contains("<LockDuration>PT45S</LockDuration>"), "subscription echoes LockDuration");
+        SubscriptionProperties gotSub = admin.getSubscription(TOPIC, SUBSCRIPTION);
+        check(Duration.parse("PT45S").equals(gotSub.getLockDuration()),
+            "subscription lockDuration round-trips (" + gotSub.getLockDuration() + ")");
 
         step("create SQL rule");
-        r = mgmt("PUT", TOPIC + "/Subscriptions/" + SUBSCRIPTION + "/Rules/" + RULE, entry("RuleDescription",
-            "<Filter i:type=\"SqlFilter\"><SqlExpression>priority = 'high'</SqlExpression></Filter>"
-                + "<Action i:type=\"EmptyRuleAction\" /><Name>" + RULE + "</Name>"));
-        check(created(r), "create rule -> " + r.statusCode());
+        check(RULE.equals(admin.createRule(TOPIC, SUBSCRIPTION, RULE,
+            new CreateRuleOptions(new SqlRuleFilter("priority = 'high'"))).getName()),
+            "rule created (" + RULE + ")");
 
         step("list entities");
-        r = mgmt("GET", "$Resources/queues", null);
-        check(r.statusCode() == 200 && r.body().contains(QUEUE), "list queues includes the queue");
-        r = mgmt("GET", "$Resources/topics", null);
-        check(r.statusCode() == 200 && r.body().contains(TOPIC), "list topics includes the topic");
-        r = mgmt("GET", TOPIC + "/Subscriptions", null);
-        check(r.statusCode() == 200 && r.body().contains(SUBSCRIPTION), "list subscriptions includes the subscription");
-        r = mgmt("GET", TOPIC + "/Subscriptions/" + SUBSCRIPTION + "/Rules", null);
-        check(r.statusCode() == 200 && r.body().contains(RULE) && r.body().contains("$Default"),
-            "list rules includes $Default + our rule");
+        check(admin.listQueues().stream().count() >= 1, "listQueues returns the queue");
+        check(admin.listTopics().stream().count() >= 1, "listTopics returns the topic");
+        check(admin.listSubscriptions(TOPIC).stream().count() == 1, "listSubscriptions returns one subscription");
+        // A subscription always keeps its implicit $Default rule alongside the one we added.
+        check(admin.listRules(TOPIC, SUBSCRIPTION).stream().count() == 2, "listRules returns $Default + our rule");
 
         step("usage: send and receive on the admin-created queue (data plane on 5672)");
         try (ServiceBusSenderClient sender = new ServiceBusClientBuilder()
-                .connectionString(CONNECTION_STRING).sender().queueName(QUEUE).buildClient()) {
+                .connectionString(DATA_CONNECTION_STRING).sender().queueName(QUEUE).buildClient()) {
             sender.sendMessage(new ServiceBusMessage("hello-admin").setSubject("AdminCreated"));
         }
         try (ServiceBusReceiverClient receiver = new ServiceBusClientBuilder()
-                .connectionString(CONNECTION_STRING).receiver()
+                .connectionString(DATA_CONNECTION_STRING).receiver()
                 .receiveMode(ServiceBusReceiveMode.PEEK_LOCK).queueName(QUEUE).buildClient()) {
             List<ServiceBusReceivedMessage> msgs =
                 receiver.receiveMessages(1, Duration.ofSeconds(10)).stream().toList();
@@ -163,12 +159,17 @@ public final class AdminSmoke {
         }
 
         step("delete rule, subscription, topic, queue");
-        check(created(mgmt("DELETE", TOPIC + "/Subscriptions/" + SUBSCRIPTION + "/Rules/" + RULE, null)),
-            "delete rule");
-        check(created(mgmt("DELETE", TOPIC + "/Subscriptions/" + SUBSCRIPTION, null)), "delete subscription");
-        check(created(mgmt("DELETE", TOPIC, null)), "delete topic");
-        check(created(mgmt("DELETE", QUEUE, null)), "delete queue");
-        check(mgmt("GET", QUEUE, null).statusCode() == 404, "deleted queue is gone (404)");
+        admin.deleteRule(TOPIC, SUBSCRIPTION, RULE);
+        admin.deleteSubscription(TOPIC, SUBSCRIPTION);
+        admin.deleteTopic(TOPIC);
+        admin.deleteQueue(QUEUE);
+        boolean gone = false;
+        try {
+            admin.getQueue(QUEUE);
+        } catch (ResourceNotFoundException e) {
+            gone = true;
+        }
+        check(gone, "deleted queue is gone (404)");
 
         System.out.println("\nJava admin test passed");
     }

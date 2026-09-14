@@ -24,10 +24,11 @@ almost-servicebus --AdminTlsEnabled true --AdminTlsPort 443
 Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=emulator;UseDevelopmentEmulator=true
 ```
 
-If you cannot bind 443, drive the Atom REST API directly over `https://localhost:5301` with
-`java.net.http` instead of the SDK admin client (see
+If you cannot bind 443, the SDK admin client is unusable; drive the Atom REST API directly over
+`https://localhost:5301` with `java.net.http` instead. The data plane (send/receive on 5672) works
+with the SDK regardless. The smoke test
 [`../tests/client-sdk-smoke/java/.../AdminSmoke.java`](../tests/client-sdk-smoke/java/src/main/java/io/almostservicebus/smoke/AdminSmoke.java)
-for a worked example). The data plane (send/receive on 5672) works with the SDK regardless.
+uses the SDK admin client against port 443.
 
 ## Trust the CA
 
